@@ -18,6 +18,7 @@
  *   tetrahedral mesh. fftetgridfast.c is a runtime optimized mex implementation of
  *   the function fftet2grid.m.
  *
+ *
  *   This code is compatible with OCTAVE and MATLAB before R2018
  *   (old Complex API)
  *
@@ -28,7 +29,7 @@
  *   Matlab users on Windows with microsoft visual studio compile the mex
  *   file with the command:
  *
- *       mex fftet2gridfast.c -largeArrayDims
+ *       mex fftet2gridfast.cpp -largeArrayDims
  *
  * Copyright (C) 2018 Chloros2 <chloros2@gmx.de>
  *
@@ -100,7 +101,6 @@ Vector minus(Vector a, Vector b){
 }
 
 typedef enum {
-  P0,
   P1,
   P2
 } feElement;
@@ -109,7 +109,7 @@ void
 fftet2gridfast (double *x, double *y, double *z, double *tx, double *ty,
                 double *tz, double **tuRe, double **tuIm, double **wRe,
                 double **wIm, mwSize nOuts, mwSize nTet, mwSize nx,
-                mwSize ny, feElement elementType){
+                mwSize ny, mwSize nz, feElement elementType){
 
   double *invV0=(double *)mxMalloc(nTet*sizeof(double));
   double init=mxGetNaN( );
@@ -130,11 +130,14 @@ fftet2gridfast (double *x, double *y, double *z, double *tx, double *ty,
   /*For all grid points of the meshgrid */
   for (mwSize mx=0; mx<nx; mx++){
     for (mwSize my=0; my<ny; my++){
-      mwSize ofs=(mx*ny)+my;
+      for (mwSize mz=0; mz<nz; mz++){  
+      mwSize ofs= (ny*nz*mx) +(my*nz)+mz;
       for (mwSize nArg=0; nArg<nOuts; nArg++){
         if (tuIm[nArg] != NULL){
           *(wIm[nArg]+ofs)=init;
           *(wRe[nArg]+ofs)=init;
+          //(*(wCplx[nArg]+ofs)).real = init;
+          //(*(wCplx[nArg]+ofs)).imag = init;
         }
         else{
           *(wRe[nArg]+ofs)=init;
@@ -143,12 +146,14 @@ fftet2gridfast (double *x, double *y, double *z, double *tx, double *ty,
       mwSize i=0, j=0;
       bool doSearchTet=true;
       while (doSearchTet && (i<nNodes)){
-        /*If the point (X,Y) is outside a square defined by the tetrahedron
+        /*If the point (X,Y,Z) is outside a square defined by the tetrahedron
           vertices, the point can not be within the tetrahedron */
         bool presel=((x[ofs] <= max4(tx[i],tx[i+1],tx[i+2],tx[i+3])) &&
                      (x[ofs] >= min4(tx[i],tx[i+1],tx[i+2],tx[i+3])) &&
                      (y[ofs] <= max4(ty[i],ty[i+1],ty[i+2],ty[i+3])) &&
-                     (y[ofs] >= min4(ty[i],ty[i+1],ty[i+2],ty[i+3])));
+                     (y[ofs] >= min4(ty[i],ty[i+1],ty[i+2],ty[i+3])) &&
+                     (z[ofs] <= max4(tz[i],tz[i+1],tz[i+2],tz[i+3])) &&
+                     (z[ofs] >= min4(tz[i],tz[i+1],tz[i+2],tz[i+3])));
         /*Potential candiate - calculate Barycentric Coordinates */
         if (presel) {
           Vector ap={tx[i], ty[i], tz[i]},
@@ -171,17 +176,6 @@ fftet2gridfast (double *x, double *y, double *z, double *tx, double *ty,
             in Va..Vd */
           if ((Va >= -1e-13) && (Vb >= -1e-13) && (Vc >= -1e-13) && (Vd >= -1e-13)){
             switch (elementType){
-              case P0:
-                for (mwSize nArg=0; nArg<nOuts; nArg++){
-                  if (tuIm[nArg] != NULL){
-                    *(wIm[nArg]+ofs)=*(tuIm[nArg]+j);
-                    *(wRe[nArg]+ofs)=*(tuRe[nArg]+j);
-                  }
-                  else{
-                    *(wRe[nArg]+ofs)=*(tuRe[nArg]+j);
-                  }
-                }
-              break;
               case P1:
                 for (mwSize nArg=0; nArg<nOuts; nArg++){
                   if (tuIm[nArg] != NULL){
@@ -191,6 +185,8 @@ fftet2gridfast (double *x, double *y, double *z, double *tx, double *ty,
                     *(wRe[nArg]+ofs)=P1(Va,Vb,Vc,Vd,
                                         *(tuRe[nArg]+i),*(tuRe[nArg]+i+1),
                                         *(tuRe[nArg]+i+2),*(tuRe[nArg]+i+3));
+                    //(*(wCplx[nArg]+ofs)).real = ;
+                    //(*(wCplx[nArg]+ofs)).imag = ;
                   }
                   else{
                     *(wRe[nArg]+ofs)=P1(Va,Vb,Vc,Vd,
@@ -239,6 +235,7 @@ fftet2gridfast (double *x, double *y, double *z, double *tx, double *ty,
         j=j+1;
       }
     }
+   }
   }
   mxFree(invV0);
 }
@@ -255,6 +252,7 @@ void mexFunction(int nlhs, mxArray *plhs[],
   mwSize nColTX, mRowTX, nColTY, mRowTY, nColTZ, mRowTZ;
   double *tuRe[nArgMax], *tuIm[nArgMax];
   mwSize nColTU[nArgMax], mRowTU[nArgMax];
+  mwSize dims[3];
   double *wRe[nArgMax], *wIm[nArgMax];
 
   if ((nrhs < 7) || (nrhs > nArgMax)){
@@ -266,20 +264,20 @@ void mexFunction(int nlhs, mxArray *plhs[],
 
   /*Meshgrid x,y */
   x=mxGetPr(prhs[0]);
-  nColX=(mwSize)mxGetN(prhs[0]);
+  nColX=(mwSize)mxGetM(prhs[0]);
   mRowX=(mwSize)mxGetM(prhs[0]);
   y=mxGetPr(prhs[1]);
-  nColY=(mwSize)mxGetN(prhs[1]);
+  nColY=(mwSize)mxGetM(prhs[1]);
   mRowY=(mwSize)mxGetM(prhs[1]);
   z=mxGetPr(prhs[2]);
-  nColZ=(mwSize)mxGetN(prhs[2]);
+  nColZ=(mwSize)mxGetM(prhs[2]);
   mRowZ=(mwSize)mxGetM(prhs[2]);
   if (!((nColX == nColY) && (mRowX == mRowY) && (nColX == nColZ) && (mRowX == mRowZ))){
       mexErrMsgTxt("Arguments 1,2,3 must have same dimensions");
   }
   mwSize nX=nColX;
   mwSize nY=mRowX;
-
+  mwSize nZ=mRowX;
   /*Triangle Mesh tx, ty */
   tx=mxGetPr(prhs[3]);
   nColTX=(mwSize)mxGetN(prhs[3]);
@@ -305,10 +303,14 @@ void mexFunction(int nlhs, mxArray *plhs[],
     if (mxIsComplex(prhs[i+6])){
       tuRe[i]=mxGetPr(prhs[i+6]);
       tuIm[i]=mxGetPi(prhs[i+6]);
+      //tuCplx[i] = mxGetComplexDoubles(prhs[i+6]);
+      //tuRe[i]=NULL;
     }
     else{
       tuRe[i]=mxGetPr(prhs[i+6]);
       tuIm[i]=NULL;
+      //tuRe[i] = mxGetDoubles(prhs[i+6]);
+      //tuCplx[i] = NULL;
     }
   }
   mwSize nDoF=mRowTU[0];
@@ -322,9 +324,6 @@ void mexFunction(int nlhs, mxArray *plhs[],
   //mexPrintf("nXcol:%i nYrow:%i nT:%i nDoF:%i\n",nX,nY,nTet,nDoF);
 
   switch (nDoF){
-    case 1:
-      elementType=P0;
-    break;
     case 4:
       elementType=P1;
     break;
@@ -339,20 +338,27 @@ void mexFunction(int nlhs, mxArray *plhs[],
   if (nlhs != nDim){
     mexErrMsgTxt("Same dimension for output as well as input");
   }
-
+dims[0]=nY; dims[1]=nX; dims[2]=nZ;
+  
   for (mwSize i=0; i<nDim; i++){
     if (tuIm[i] != NULL){
-      plhs[i]=mxCreateDoubleMatrix(nY, nX, mxCOMPLEX);
+      plhs[i]=mxCreateNumericArray(3,dims,mxDOUBLE_CLASS,mxCOMPLEX);
       wRe[i]=mxGetPr(plhs[i]);
       wIm[i]=mxGetPi(plhs[i]);
+      //wCplx[i]=mxGetComplexDoubles(plhs[i]);
+      //wRe[i]=NULL;
+      //mexPrintf("data is complex\n");
     }
     else{
-      plhs[i]=mxCreateDoubleMatrix(nY, nX, mxREAL);
+      plhs[i]=mxCreateNumericArray(3,dims,mxDOUBLE_CLASS,mxREAL);
       wRe[i]=mxGetPr(plhs[i]);
       wIm[i]=NULL;
+      //wRe=mxGetDoubles(plhs[i]);
+      //wCplx[i]=NULL;
+      //mexPrintf("data is real\n");
     }
   }
 
   fftet2gridfast (x,y,z,tx,ty,tz,tuRe,tuIm,wRe,wIm,nDim,nTet,
-                  nX,nY,elementType);
+                  nX,nY,nZ,elementType);
 }
